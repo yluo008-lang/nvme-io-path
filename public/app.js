@@ -64,17 +64,80 @@
     $("cmLink").href = "https://elixir.bootlin.com/linux/v" + ver + "/ident/" + encodeURIComponent(ident);
     modal.hidden = false;
     const url = "/nvme-io-path/api/code?ver=" + encodeURIComponent(ver) + "&ident=" + encodeURIComponent(ident) + (file ? "&file=" + encodeURIComponent(file) : "");
-    fetch(url).then((r) => r.json()).then((j) => {
-      if (j.ok) {
-        $("cmMeta").textContent = "Linux " + ver + " · " + j.file + " : L" + j.start + "-" + j.end;
-        $("cmBody").innerHTML = '<pre class="codeview"><code>' + esc(j.code) + "</code></pre>";
-        $("cmBody").dataset.code = j.code;
-        if (j.url) $("cmLink").href = j.url;
-      } else {
-        $("cmBody").innerHTML = '<div class="dim">' + esc(j.error || "未找到定义") + "</div>";
-        if (j.url) $("cmLink").href = j.url;
+    const showFallback = (msg) => {
+      $("cmBody").innerHTML = '<div class="dim">' + esc(msg || "未找到定义。") + "<br>（GitHub Pages 为纯静态托管）点击下方按钮在 elixir.bootlin.com 查看。</div>";
+    };
+    const paint = (j, label) => {
+      if (!j || !j.ok) return false;
+      $("cmMeta").textContent = "Linux " + ver + " · " + (label || "") + j.file + " : L" + j.start + "-" + j.end;
+      $("cmBody").innerHTML = '<pre class="codeview"><code>' + esc(j.code) + "</code></pre>";
+      $("cmBody").dataset.code = j.code;
+      if (j.url) $("cmLink").href = j.url;
+      return true;
+    };
+    fetch(url)
+      .then((r) => { if (!r.ok || !/json/i.test(r.headers.get("content-type") || "")) throw new Error("no-api"); return r.json(); })
+      .then((j) => { if (!paint(j, "")) throw new Error((j && j.error) || "not-found"); })
+      .catch(() => {
+        if (!file) return showFallback();
+        fetchRawSource(ver, file, ident)
+          .then((j) => { if (!paint(j, "GitHub raw · ")) showFallback(j && j.error); })
+          .catch(() => showFallback());
+      });
+  }
+
+  /* ---------- 客户端回退：GitHub raw 拉取并解析（Pages 无后端时） ---------- */
+  function braceMatchJs(lines, start) {
+    let depth = 0, started = false;
+    for (let i = start; i < lines.length; i++) {
+      const s = lines[i].text;
+      let inBlock = false, inStr = false, inChr = false;
+      for (let j = 0; j < s.length; j++) {
+        const c = s[j], nx = s[j + 1];
+        if (inBlock) { if (c === "*" && nx === "/") { inBlock = false; j++; } continue; }
+        if (inStr) { if (c === "\\") j++; else if (c === '"') inStr = false; continue; }
+        if (inChr) { if (c === "\\") j++; else if (c === "'") inChr = false; continue; }
+        if (c === "/" && nx === "/") break;
+        if (c === "/" && nx === "*") { inBlock = true; j++; continue; }
+        if (c === '"') { inStr = true; continue; }
+        if (c === "'") { inChr = true; continue; }
+        if (c === "{") { depth++; started = true; }
+        else if (c === "}") { depth--; if (started && depth === 0) return i; }
       }
-    }).catch((e) => { $("cmBody").innerHTML = '<div class="dim">获取失败：' + esc(String(e)) + "</div>"; });
+      if (!started && /;\s*$/.test(s)) return -1;
+    }
+    return -1;
+  }
+  function findDefinitionJs(lines, ident) {
+    const escRe = ident.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const callRe = new RegExp("(^|[^\\w.>])" + escRe + "\\s*\\(");
+    const typeRe = new RegExp("\\b(struct|union|enum)\\s+" + escRe + "\\b");
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i].text;
+      if (t.indexOf("." + ident) >= 0 || t.indexOf("->" + ident) >= 0) continue;
+      if (/^\s*(\/\/|\*|\/\*)/.test(t)) continue;
+      const isCall = callRe.test(t), isType = typeRe.test(t);
+      if (!isCall && !isType) continue;
+      if (/^\s*#\s*define\b/.test(t)) { let e = i; while (e < lines.length - 1 && /\\\s*$/.test(lines[e].text)) e++; return { start: i, end: e }; }
+      if (isCall && /;\s*$/.test(t)) continue;
+      const end = braceMatchJs(lines, i);
+      if (end >= i) return { start: i, end: end };
+    }
+    return null;
+  }
+  function fetchRawSource(ver, file, ident) {
+    const tag = /^v/.test(ver) ? ver : "v" + ver;
+    const url = "https://raw.githubusercontent.com/torvalds/linux/" + tag + "/" + file;
+    return fetch(url).then((r) => { if (!r.ok) throw new Error("raw " + r.status); return r.text(); }).then((text) => {
+      const lines = text.split("\n").map((t, i) => ({ n: i + 1, text: t.replace(/\r$/, "") }));
+      const def = findDefinitionJs(lines, ident);
+      if (!def) return { ok: false, error: "在 " + file + " 中未找到 " + ident + " 的定义" };
+      return {
+        ok: true, file: file, start: lines[def.start].n, end: lines[def.end].n,
+        code: lines.slice(def.start, def.end + 1).map((l) => l.text).join("\n"),
+        url: "https://elixir.bootlin.com/linux/" + tag + "/source/" + file + "#L" + lines[def.start].n
+      };
+    });
   }
 
   /* ---------- 初始化 ---------- */
