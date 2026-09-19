@@ -1,0 +1,10 @@
+# logs
+*.log
+# deps
+node_modules/
+# OS
+.DS_Store
+Thumbs.db
+# editor
+.vscode/
+.idea/

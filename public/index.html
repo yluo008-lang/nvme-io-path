@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NVMe IO 链路互动教学平台</title>
+  <link rel="stylesheet" href="/nvme-io-path/styles.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">NVMe <span class="dot">IO</span> 链路互动教学
+      <span class="sub">应用 → VFS → 文件系统 → blk-mq → NVMe 驱动 → SQ/CQ</span>
+      <span class="author">作者：罗毅</span>
+    </div>
+    <div class="ctl">
+      <label for="kernelSelect">内核版本</label>
+      <select id="kernelSelect"></select>
+      <span class="hint">← / → 键步进</span>
+    </div>
+  </header>
+
+  <div class="main">
+    <!-- 左上：Shell 模拟 -->
+    <section class="panel term" id="p-shell">
+      <div class="panel-h">左上 · Shell 模拟（发送指令 / 初始化）</div>
+      <div id="termOut"></div>
+      <div class="term-in">
+        <span class="ps">user@linux:~$</span>
+        <input id="termInput" autocomplete="off" spellcheck="false" placeholder="help / read / insmod nvme / io_uring ..." />
+      </div>
+      <div class="progress-bar">
+        <div class="prog-track"><div class="prog-fill" id="progFill"></div></div>
+        <span id="progText">0 / 0</span>
+      </div>
+    </section>
+
+    <!-- 右上：功能说明 + 关键代码逻辑 -->
+    <section class="panel" id="p-detail">
+      <div class="panel-h">右上 · 功能说明 &amp; 关键代码逻辑</div>
+      <div class="detail" id="detail"></div>
+    </section>
+
+    <!-- 左下：系统框图 + 链路分层 -->
+    <section class="panel" id="p-diagram">
+      <div class="panel-h">左下 · 系统框图 &amp; 链路分层（点击模块 / 节点跳转）</div>
+      <div class="diagram-wrap" id="diagramBox"></div>
+      <div class="path-wrap" id="pathWrap"></div>
+    </section>
+
+    <!-- 右下：各层核心代码操作 -->
+    <section class="panel" id="p-codemap">
+      <div class="panel-h">右下 · 驱动 / 各层核心代码操作（点击函数看源码）</div>
+      <div class="codemap" id="codemap"></div>
+    </section>
+  </div>
+
+  <!-- 关键函数 / 结构体源码弹窗（Bootlin） -->
+  <div id="codeModal" class="modal" hidden>
+    <div class="modal-box" role="dialog" aria-modal="true">
+      <div class="modal-h">
+        <div class="modal-title">
+          <span id="cmIdent" class="cm-ident">fn</span>
+          <span id="cmMeta" class="cm-meta"></span>
+        </div>
+        <button id="cmClose" class="modal-x" title="关闭 (Esc)">✕</button>
+      </div>
+      <div class="modal-body" id="cmBody"></div>
+      <div class="modal-f">
+        <a id="cmLink" href="#" target="_blank" rel="noopener" class="modal-link">在 elixir.bootlin.com 打开 ↗</a>
+        <span class="spacer"></span>
+        <button id="cmCopy" class="modal-btn">复制代码</button>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    自制教学演示 · 函数名/结构体以 Linux 6.x 源码为准，可切换 4.19–6.8 查看路径差异。
+    典型链路：<code>read() → vfs_read → iomap → submit_bio → blk_mq_submit_bio → nvme_queue_rq → SQE → doorbell → CQE → bio_endio</code>
+  </footer>
+
+  <script src="/nvme-io-path/data.js"></script>
+  <script src="/nvme-io-path/kb.js"></script>
+  <script src="/nvme-io-path/app.js"></script>
+</body>
+</html>
