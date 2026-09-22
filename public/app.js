@@ -79,8 +79,8 @@
       .then((r) => { if (!r.ok || !/json/i.test(r.headers.get("content-type") || "")) throw new Error("no-api"); return r.json(); })
       .then((j) => { if (!paint(j, "")) throw new Error((j && j.error) || "not-found"); })
       .catch(() => {
-        if (!file) return showFallback();
-        fetchRawSource(ver, file, ident)
+        $("cmBody").innerHTML = '<div class="dim cm-loading">⏳ 后端不可用，正在从 GitHub 源码定位 <b>' + esc(ident) + "</b> 的定义…</div>";
+        resolveIdent(ver, ident, file)
           .then((j) => { if (!paint(j, "GitHub raw · ")) showFallback(j && j.error); })
           .catch(() => showFallback());
       });
@@ -112,32 +112,177 @@
     const escRe = ident.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const callRe = new RegExp("(^|[^\\w.>])" + escRe + "\\s*\\(");
     const typeRe = new RegExp("\\b(struct|union|enum)\\s+" + escRe + "\\b");
+    const scRe = new RegExp("SYSCALL_DEFINE\\d?\\s*\\(\\s*" + escRe + "\\b");
+    const defineRe = new RegExp("^\\s*#\\s*define\\s+" + escRe + "\\b");
     for (let i = 0; i < lines.length; i++) {
       const t = lines[i].text;
-      if (t.indexOf("." + ident) >= 0 || t.indexOf("->" + ident) >= 0) continue;
       if (/^\s*(\/\/|\*|\/\*)/.test(t)) continue;
-      const isCall = callRe.test(t), isType = typeRe.test(t);
-      if (!isCall && !isType) continue;
-      if (/^\s*#\s*define\b/.test(t)) { let e = i; while (e < lines.length - 1 && /\\\s*$/.test(lines[e].text)) e++; return { start: i, end: e }; }
-      if (isCall && /;\s*$/.test(t)) continue;
+      if (/^\s*#\s*define\b/.test(t)) {
+        if (!defineRe.test(t)) continue;
+        let e = i; while (e < lines.length - 1 && /\\\s*$/.test(lines[e].text)) e++;
+        return { start: i, end: e };
+      }
+      const isCall = callRe.test(t), isType = typeRe.test(t), isSc = scRe.test(t);
+      if (!isCall && !isType && !isSc) continue;
+      if (!isType && !isSc && (t.indexOf("." + ident) >= 0 || t.indexOf("->" + ident) >= 0)) continue;
+      if ((isCall || isSc) && !isType && /;\s*$/.test(t)) continue;
       const end = braceMatchJs(lines, i);
       if (end >= i) return { start: i, end: end };
     }
     return null;
   }
-  function fetchRawSource(ver, file, ident) {
+  /* 符号 -> 定义所在文件的精选映射（调用处文件经常不是定义处，如 device_add_disk 在 block/genhd.c） */
+  const IDENT_FILES = {
+    device_add_disk: ["block/genhd.c"],
+    nvme_init_ctrl: ["drivers/nvme/host/core.c"],
+    nvme_enable_ctrl: ["drivers/nvme/host/core.c"],
+    nvme_disable_ctrl: ["drivers/nvme/host/core.c"],
+    nvme_core_init: ["drivers/nvme/host/core.c"],
+    nvme_identify_ctrl: ["drivers/nvme/host/core.c"],
+    nvme_identify_ns: ["drivers/nvme/host/core.c"],
+    nvme_identify_ns_descs: ["drivers/nvme/host/core.c"],
+    nvme_init_subsystem: ["drivers/nvme/host/core.c"],
+    nvme_set_features: ["drivers/nvme/host/core.c"],
+    nvme_setup_cmd: ["drivers/nvme/host/core.c"],
+    nvme_setup_rw: ["drivers/nvme/host/core.c"],
+    nvme_queue_rq: ["drivers/nvme/host/core.c"],
+    nvme_alloc_ns: ["drivers/nvme/host/core.c"],
+    nvme_ctrl: ["drivers/nvme/host/nvme.h"],
+    nvme_ns: ["drivers/nvme/host/nvme.h"],
+    nvme_subsystem: ["drivers/nvme/host/nvme.h"],
+    nvme_probe: ["drivers/nvme/host/pci.c"],
+    nvme_queue_rq: ["drivers/nvme/host/pci.c"],
+    nvme_queue_rqs: ["drivers/nvme/host/pci.c"],
+    nvme_prep_rq: ["drivers/nvme/host/pci.c"],
+    nvme_sq_copy_cmd: ["drivers/nvme/host/pci.c"],
+    nvme_dev_map: ["drivers/nvme/host/pci.c"],
+    nvme_setup_irqs: ["drivers/nvme/host/pci.c"],
+    nvme_pci_configure_admin_queue: ["drivers/nvme/host/pci.c"],
+    nvme_create_io_queues: ["drivers/nvme/host/pci.c"],
+    nvme_pci_map_queues: ["drivers/nvme/host/pci.c"],
+    nvme_map_data: ["drivers/nvme/host/pci.c"],
+    nvme_submit_cmds: ["drivers/nvme/host/pci.c"],
+    nvme_write_sq_db: ["drivers/nvme/host/pci.c"],
+    nvme_irq: ["drivers/nvme/host/pci.c"],
+    nvme_poll_cq: ["drivers/nvme/host/pci.c"],
+    nvme_dev: ["drivers/nvme/host/pci.c"],
+    nvme_queue: ["drivers/nvme/host/pci.c"],
+    nvme_command: ["include/linux/nvme.h"],
+    nvme_completion: ["include/linux/nvme.h"],
+    nvme_id_ctrl: ["include/linux/nvme.h"],
+    nvme_id_ns: ["include/linux/nvme.h"],
+    lo_hi_readq: ["include/linux/io-64-nonatomic-lo-hi.h"],
+    writel: ["include/asm-generic/io.h"],
+    readl: ["include/asm-generic/io.h"],
+    pci_register_driver: ["drivers/pci/pci-driver.c"],
+    pci_driver: ["include/linux/pci.h"],
+    elevator_queue: ["block/elevator.h"],
+    dd_dispatch_request: ["block/mq-deadline.c"],
+    request: ["include/linux/blk-mq.h"],
+    blk_mq_tags: ["include/linux/blk-mq.h"],
+    blk_mq_hw_ctx: ["include/linux/blk-mq.h"],
+    blk_mq_ctx: ["include/linux/blk-mq.h"],
+    bio: ["include/linux/blk_types.h"],
+    file: ["include/linux/fs.h"],
+    kiocb: ["include/linux/fs.h"],
+    file_operations: ["include/linux/fs.h"],
+    address_space: ["include/linux/fs.h"],
+    init_sync_kiocb: ["include/linux/fs.h"],
+    iov_iter_init: ["include/linux/fs.h"],
+    iov_iter: ["include/linux/uio.h"],
+    page: ["include/linux/mm_types.h"],
+    folio: ["include/linux/mm_types.h"],
+    iomap: ["include/linux/iomap.h"],
+    gendisk: ["include/linux/blkdev.h"],
+    blk_mq_submit_bio: ["block/blk-mq.c"],
+    blk_mq_dispatch_rq_list: ["block/blk-mq.c"],
+    blk_mq_flush_plug_list: ["block/blk-mq.c"],
+    blk_mq_end_request: ["block/blk-mq.c"],
+    generic_make_request: ["block/blk-core.c"],
+    submit_bio_noacct: ["block/blk-core.c"],
+    bio_endio: ["block/bio.c"],
+    ksys_read: ["fs/read_write.c"],
+    ksys_write: ["fs/read_write.c"],
+    read: ["fs/read_write.c"],
+    write: ["fs/read_write.c"],
+    generic_file_read_iter: ["mm/filemap.c"],
+    filemap_read: ["mm/filemap.c"],
+    filemap_read_folio: ["mm/filemap.c"],
+    do_generic_file_read: ["mm/filemap.c"],
+    generic_perform_write: ["mm/filemap.c"],
+    do_writepages: ["mm/page-writeback.c"],
+    read_pages: ["mm/readahead.c"],
+    iomap_read_folio: ["fs/iomap/buffered-io.c"],
+    iomap_writepages: ["fs/iomap/buffered-io.c"],
+    iomap_dio_rw: ["fs/iomap/direct-io.c"],
+    __blockdev_direct_IO: ["fs/direct-io.c"],
+    io_uring_enter: ["io_uring/io_uring.c"],
+    io_submit_sqes: ["io_uring/io_uring.c"],
+    io_uring_sqe: ["include/uapi/linux/io_uring.h"],
+    io_uring_cqe: ["include/uapi/linux/io_uring.h"],
+    io_kiocb: ["io_uring/io_uring.h", "io_uring/io_uring.c"],
+    io_rw: ["io_uring/rw.c"]
+  };
+  function guessFiles(ident) {
+    if (/^nvme_/.test(ident)) return ["drivers/nvme/host/core.c", "drivers/nvme/host/pci.c", "drivers/nvme/host/nvme.h", "include/linux/nvme.h"];
+    if (/^blk_mq/.test(ident)) return ["block/blk-mq.c", "include/linux/blk-mq.h"];
+    if (/^bio_/.test(ident)) return ["block/bio.c", "include/linux/blk_types.h"];
+    if (/^pci_/.test(ident)) return ["drivers/pci/pci-driver.c", "include/linux/pci.h"];
+    if (/^elevator/.test(ident)) return ["block/elevator.h"];
+    return [];
+  }
+  const rawCache = new Map();
+  const identCache = new Map();
+  function fetchRawLines(ver, file) {
     const tag = /^v/.test(ver) ? ver : "v" + ver;
+    const key = tag + "|" + file;
+    if (rawCache.has(key)) return Promise.resolve(rawCache.get(key));
     const url = "https://raw.githubusercontent.com/torvalds/linux/" + tag + "/" + file;
-    return fetch(url).then((r) => { if (!r.ok) throw new Error("raw " + r.status); return r.text(); }).then((text) => {
+    return fetch(url).then((r) => {
+      if (!r.ok) throw new Error("raw " + r.status);
+      return r.text();
+    }).then((text) => {
       const lines = text.split("\n").map((t, i) => ({ n: i + 1, text: t.replace(/\r$/, "") }));
-      const def = findDefinitionJs(lines, ident);
-      if (!def) return { ok: false, error: "在 " + file + " 中未找到 " + ident + " 的定义" };
-      return {
-        ok: true, file: file, start: lines[def.start].n, end: lines[def.end].n,
-        code: lines.slice(def.start, def.end + 1).map((l) => l.text).join("\n"),
-        url: "https://elixir.bootlin.com/linux/" + tag + "/source/" + file + "#L" + lines[def.start].n
-      };
+      rawCache.set(key, lines);
+      return lines;
+    }).catch(() => { rawCache.set(key, null); return null; });
+  }
+  const IDENT_ALIAS = { prp_list: "nvme_command" };
+  function resolveIdent(ver, ident, hintFile) {
+    if (IDENT_ALIAS[ident]) ident = IDENT_ALIAS[ident];
+    const tag = /^v/.test(ver) ? ver : "v" + ver;
+    const ck = tag + "|" + ident;
+    if (identCache.has(ck)) return Promise.resolve(identCache.get(ck));
+    const cands = [];
+    if (hintFile) cands.push(hintFile);
+    (IDENT_FILES[ident] || []).forEach((f) => { if (cands.indexOf(f) < 0) cands.push(f); });
+    guessFiles(ident).forEach((f) => { if (cands.indexOf(f) < 0) cands.push(f); });
+    const tried = cands.slice(0, 8);
+    let chain = Promise.resolve(null);
+    tried.forEach((file) => {
+      chain = chain.then((hit) => {
+        if (hit) return hit;
+        return fetchRawLines(ver, file).then((lines) => {
+          if (!lines) return null;
+          const def = findDefinitionJs(lines, ident);
+          if (!def) return null;
+          return {
+            ok: true, file: file, start: lines[def.start].n, end: lines[def.end].n,
+            code: lines.slice(def.start, def.end + 1).map((l) => l.text).join("\n"),
+            url: "https://elixir.bootlin.com/linux/" + tag + "/source/" + file + "#L" + lines[def.start].n
+          };
+        });
+      });
     });
+    return chain.then((hit) => {
+      const res = hit || { ok: false, error: "在 " + (tried.length ? tried.join("、") : "内核源码") + " 中未找到 " + ident + " 的定义" };
+      identCache.set(ck, res);
+      return res;
+    });
+  }
+
+  function fetchRawSource(ver, file, ident) {
+    return resolveIdent(ver, ident, file);
   }
 
   /* ---------- 初始化 ---------- */

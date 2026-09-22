@@ -283,9 +283,11 @@ e->type->ops.insert_requests(hctx, &list);`,
     "进入 NVMe 驱动": `static blk_status_t nvme_queue_rq(struct blk_mq_hw_ctx *hctx,
                                    const struct blk_mq_queue_data *bd)
 {
-    nvme_setup_cmd(ns, req);       /* 编码命令 */
-    nvme_map_data(dev, req, cmnd); /* DMA 映射 */
-    nvme_submit_cmd(nvmeq, cmnd, true);  /* 入 SQ + 敲 doorbell */
+    ret = nvme_prep_rq(dev, req);   /* 编码命令(nvme_setup_cmd)+DMA 映射 */
+    spin_lock(&nvmeq->sq_lock);
+    nvme_sq_copy_cmd(nvmeq, &iod->cmd);  /* SQE 入 SQ，批量走 nvme_submit_cmds */
+    nvme_write_sq_db(nvmeq, bd->last);   /* 敲 doorbell */
+    spin_unlock(&nvmeq->sq_lock);
 }`,
     "编码 NVMe 命令": `cmd->common.opcode = nvme_cmd_read;   /* 0x02, 写为 0x01 */
 cmd->common.nsid   = ns->head->ns_id; /* 命名空间 ID */
